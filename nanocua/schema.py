@@ -1,8 +1,13 @@
-"""Canonical CUA records: Action, Step, Trajectory, SFTSample.
+"""Canonical CUA records: Action, Step, Trajectory, SFTSample, GroundingExample.
 
 A *trajectory* is one recorded attempt at a computer-use task: a goal plus an
 ordered list of steps. Each *step* is what the agent saw (screenshot), thought,
 and did (action) at that moment.
+
+A *grounding example* is the Stage-1 sibling: one screenshot, one referring
+expression, and a point and/or bbox. Papers call this GUI grounding pretrain
+(usually continual pretrain of an already-trained VLM, not from scratch).
+It is **not** a trajectory — there is no goal-over-time, no history.
 
 This is the whole data model. Fork here if you want a richer action space
 (drag, middle-click, …) or extra CoT fields (observation, reflection).
@@ -229,6 +234,138 @@ class SFTSample:
         return payload
 
 
+def _unit(name: str, value: Any) -> float:
+    number = float(value)
+    if not 0.0 <= number <= 1.0:
+        raise ValueError(f"{name} must be in [0, 1], got {value!r}")
+    return number
+
+
+def _as_point(value: Any) -> tuple[float, float] | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        if "x" not in value or "y" not in value:
+            raise ValueError(f"point dict needs x and y: {value!r}")
+        return (_unit("point.x", value["x"]), _unit("point.y", value["y"]))
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        return (_unit("point.x", value[0]), _unit("point.y", value[1]))
+    raise TypeError(f"point must be [x, y] or {{x, y}}, got {value!r}")
+
+
+def _as_bbox(value: Any) -> tuple[float, float, float, float] | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        if {"x1", "y1", "x2", "y2"} <= set(value):
+            x1, y1, x2, y2 = value["x1"], value["y1"], value["x2"], value["y2"]
+        elif {"x", "y", "w", "h"} <= set(value):
+            x1 = float(value["x"])
+            y1 = float(value["y"])
+            x2 = x1 + float(value["w"])
+            y2 = y1 + float(value["h"])
+        else:
+            raise ValueError(f"bbox dict needs x1/y1/x2/y2 or x/y/w/h: {value!r}")
+    elif isinstance(value, (list, tuple)) and len(value) == 4:
+        x1, y1, x2, y2 = value
+    else:
+        raise TypeError(f"bbox must be 4 numbers or a dict, got {value!r}")
+    box = (
+        _unit("bbox.x1", x1),
+        _unit("bbox.y1", y1),
+        _unit("bbox.x2", x2),
+        _unit("bbox.y2", y2),
+    )
+    if box[2] < box[0] or box[3] < box[1]:
+        raise ValueError(f"bbox must have x2>=x1 and y2>=y1, got {box}")
+    return box
+
+
+@dataclass
+class GroundingExample:
+    """One GUI grounding triple: screenshot + referring expression → point/bbox.
+
+    This is the Stage-1 CUA pretrain record. The VLM sees an image and a
+    phrase like ``"the browser address bar"`` and must emit a localization
+    in normalized coordinates — typically ``point(x=0.52, y=0.08)``.
+
+    Provide a ``point``, a ``bbox`` ``(x1, y1, x2, y2)``, or both. Training
+    defaults to the point (click-style). Eval uses the bbox for
+    point-in-bbox when it is present.
+    """
+
+    id: str
+    screenshot: str
+    instruction: str
+    point: tuple[float, float] | None = None
+    bbox: tuple[float, float, float, float] | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.id = str(self.id).strip()
+        self.instruction = str(self.instruction).strip()
+        if not self.instruction:
+            raise ValueError("GroundingExample.instruction must be non-empty")
+        self.point = _as_point(self.point)
+        self.bbox = _as_bbox(self.bbox)
+        if self.point is None and self.bbox is None:
+            raise ValueError("GroundingExample needs a point and/or a bbox")
+
+    def gold_point(self) -> tuple[float, float]:
+        """Explicit point, or the bbox center if only a box was given."""
+        if self.point is not None:
+            return self.point
+        x1, y1, x2, y2 = self.bbox  # type: ignore[misc]
+        return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+
+    def as_click(self) -> Action:
+        """The CUA action this localization becomes after Stage-2 SFT."""
+        x, y = self.gold_point()
+        return Action(type="click", args={"x": x, "y": y})
+
+    def target_string(self) -> str:
+        """Canonical assistant target: ``point(...)`` or ``bbox(...)``."""
+        if self.point is not None:
+            return Action(type="point", args={"x": self.point[0], "y": self.point[1]}).to_string()
+        x1, y1, x2, y2 = self.bbox  # type: ignore[misc]
+        return Action(
+            type="bbox",
+            args={"x1": x1, "y1": y1, "x2": x2, "y2": y2},
+        ).to_string()
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "id": self.id,
+            "screenshot": self.screenshot,
+            "instruction": self.instruction,
+            "metadata": dict(self.metadata),
+        }
+        if self.point is not None:
+            payload["point"] = [self.point[0], self.point[1]]
+        if self.bbox is not None:
+            payload["bbox"] = [self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3]]
+        return payload
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> GroundingExample:
+        if not isinstance(data, dict):
+            raise TypeError(f"grounding example must be a dict, got {type(data)!r}")
+        return cls(
+            id=str(data.get("id") or data.get("example_id") or ""),
+            screenshot=str(data.get("screenshot") or data.get("image") or ""),
+            instruction=str(
+                data.get("instruction")
+                or data.get("expression")
+                or data.get("referring_expression")
+                or data.get("query")
+                or ""
+            ),
+            point=data.get("point", data.get("center")),
+            bbox=data.get("bbox", data.get("box", data.get("bounds"))),
+            metadata=dict(data.get("metadata") or {}),
+        )
+
+
 @dataclass
 class Observation:
     """What an environment returns after ``reset`` / ``step``.
@@ -257,4 +394,22 @@ def load_trajectory_dicts(path: str | Path) -> list[dict[str, Any]]:
         raw = raw.get("trajectories") or raw.get("data") or [raw]
     if not isinstance(raw, list):
         raise TypeError(f"expected a list of trajectories in {path}")
+    return raw
+
+
+def dump_grounding(examples: list[GroundingExample], path: str | Path) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps([example.to_dict() for example in examples], indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def load_grounding_dicts(path: str | Path) -> list[dict[str, Any]]:
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(raw, dict):
+        raw = raw.get("examples") or raw.get("grounding") or raw.get("data") or [raw]
+    if not isinstance(raw, list):
+        raise TypeError(f"expected a list of grounding examples in {path}")
     return raw

@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "jselvam11" }]
-keywords = ["computer-use-agent", "cua", "vlm", "sft", "agents"]
+keywords = ["computer-use-agent", "cua", "vlm", "sft", "grounding", "agents"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "License :: OSI Approved :: MIT License",

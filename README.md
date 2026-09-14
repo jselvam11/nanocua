@@ -7,10 +7,12 @@ another agent framework. The point is that you can **read this repo in an
 afternoon**, understand the CUA training loop, and fork it to try an idea.
 
 ```
-trajectory  →  step samples  →  SFT train  →  (optional) rollout / eval
+Stage 1  (screenshot, referring expression)  →  point / bbox     grounding pretrain
+Stage 2  trajectory  →  step samples  →  SFT train  →  eval      behavior cloning
 ```
 
-That is the whole mental model. Everything in the tree maps onto it.
+That is the whole mental model. Grounding is a sibling of trajectory SFT, not
+a second framework. Everything in the tree maps onto one of those two arrows.
 
 ---
 
@@ -41,6 +43,11 @@ Later papers add more: richer chain-of-thought, multiple past screenshots in
 the prompt, then RL (GRPO/PPO) on live rollouts. Those are marked TODO here
 on purpose. Read the SFT loop first.
 
+Before that SFT loop, many CUA papers (SeeClick, OS-Atlas, UGround, …) run a
+**GUI grounding** stage: continual pretrain of an already-trained VLM on
+`(screenshot, referring expression) → point or bbox`. That is Stage 1 here.
+It is not training a VLM from scratch, and it is not a multi-step episode.
+
 This is **not** trycua, OpenCUA, or ScaleCUA. Those are full stacks
 (annotation, sandboxes, large datasets, trained models). nanocua is the
 minimum you need to *see the loop*.
@@ -51,20 +58,21 @@ minimum you need to *see the loop*.
 
 | Path | Role in the loop |
 |------|------------------|
-| `nanocua/schema.py` | `Action`, `Step`, `Trajectory`, `SFTSample` |
-| `nanocua/prompts.py` | How a sample becomes the text a VLM sees |
-| `nanocua/data/load.py` | JSON in (HF datasets = stub) |
+| `nanocua/schema.py` | `Action`, `Step`, `Trajectory`, `SFTSample`, `GroundingExample` |
+| `nanocua/prompts.py` | How a sample becomes the text a VLM sees (SFT *and* grounding) |
+| `nanocua/data/load.py` | JSON in (HF datasets / OS-Atlas = stub) |
 | `nanocua/data/expand.py` | Trajectory of T steps → T SFT samples |
 | `nanocua/data/export.py` | ShareGPT-ish JSONL for other trainers |
-| `nanocua/data/fixtures/` | Tiny synthetic dataset (offline) |
-| `nanocua/train/sft.py` | Thin `transformers.Trainer` SFT loop |
+| `nanocua/data/fixtures/` | Tiny synthetic datasets (offline) |
+| `nanocua/train/sft.py` | Thin `transformers.Trainer` loop (`--task sft` or `grounding`) |
 | `nanocua/train/config.py` | One dataclass / YAML of knobs |
 | `nanocua/env/` | `ComputerEnv` protocol + mock desktop |
-| `nanocua/eval/` | Offline action-match + online stub |
-| `examples/` | Three scripts: expand, smoke train, eval |
+| `nanocua/eval/` | Offline action-match, grounding point-in-bbox, online stub |
+| `examples/` | Four scripts: expand, smoke train, eval, grounding |
 
 Start with `schema.py`, then `data/expand.py`, then `train/sft.py`. Those
-three files are the course.
+three files are the course. For Stage 1, read `GroundingExample` in
+`schema.py` and `python -m nanocua.train --task grounding --dry-run`.
 
 ---
 
@@ -106,6 +114,49 @@ Action: click(x=0.52, y=0.08)
 
 ---
 
+## Stage-1: GUI grounding pretrain
+
+Trajectory SFT teaches *what to do next* given a goal and a history.
+Grounding teaches *where a widget is* given a phrase. Same VLM, same
+Trainer, different record:
+
+```
+(screenshot, "the browser address bar")  →  point(x=0.52, y=0.08)
+```
+
+In the literature this is usually **continual pretrain** on a VLM that
+already reads images (SeeClick-style element grounding, OS-Atlas-style
+boxes). nanocua does not download those datasets. The bundled fixture is
+four synthetic triples that reuse the dummy screenshots from the
+trajectory fixture — including the same address-bar point that step 0 of
+`fixture-weather-search` later clicks. That is the whole punchline:
+grounding localizes, SFT clicks.
+
+A grounding JSON row looks like this (see
+`nanocua/data/fixtures/tiny_grounding.json`):
+
+```json
+{
+  "id": "g-address-bar",
+  "screenshot": "screenshots/step_00.png",
+  "instruction": "the browser address bar",
+  "point": [0.52, 0.08],
+  "bbox": [0.20, 0.03, 0.85, 0.13]
+}
+```
+
+Coordinates are still **normalized to [0, 1]**. Give a point, a bbox, or
+both. Training emits `point(...)` when a point is present (click-style);
+offline eval reports **point-in-bbox** and a distance-threshold
+**point_acc** (default 0.05). Gold-copy on the fixture is 1.0. This repo
+does not report ScreenSpot / OS-Atlas numbers.
+
+The HF loaders (`load_hf_dataset`, `load_hf_grounding`) are explicit
+stubs. Dump OS-Atlas / SeeClick rows into this JSON shape when you want
+a real run.
+
+---
+
 ## Install
 
 Python 3.10+. The **base install has no third-party dependencies** so you can
@@ -132,12 +183,18 @@ python examples/01_load_and_expand.py
 python examples/03_offline_eval.py
 python -m nanocua.eval
 
-# 3. Prove the train CLI wires up without downloading a model
+# 3. GUI grounding fixture (Stage-1 localize)      (no GPU, no network)
+python examples/04_grounding.py
+python -m nanocua.eval --task grounding
+python -m nanocua.train --task grounding --dry-run
+
+# 4. Prove the SFT train CLI wires up without downloading a model
 python -m nanocua.train --dry-run
 ```
 
 Expected: 2 synthetic trajectories expand to **6 SFT samples**; gold-copy
-offline eval prints `exact=1.000`.
+offline eval prints `exact=1.000`. Grounding loads **4** triples; gold-copy
+prints `point_in_bbox=1.000`.
 
 ### Smoke train (optional, needs `[train]`)
 
@@ -146,6 +203,8 @@ pip install -e ".[train]"
 python examples/02_smoke_train.py --config configs/smoke.yaml
 # or
 python -m nanocua.train --config configs/smoke.yaml
+# Stage-1 grounding, same Trainer:
+python -m nanocua.train --task grounding --config configs/smoke_grounding.yaml
 ```
 
 Default model: `HuggingFaceTB/SmolVLM-256M-Instruct` — small enough to *learn
@@ -173,10 +232,12 @@ Pick one. The files are short.
 4. **Different loss** — `nanocua/train/sft.py` (mask everything except the `Action:` line; swap in TRL `SFTTrainer`).
 5. **Real desktop** — fill in `nanocua/env/adapter.py` (not imported by default).
 6. **Your own JSON** — dump trajectories in the fixture format and pass `--data path.json`.
+7. **Grounding target** — emit `bbox(...)` instead of `point(...)`, or 0–1000 integer coords like SeeClick (`prompts.py` / `GroundingExample.target_string`).
 
 ### TODO (deliberately out of scope)
 
-- Hugging Face dataset mapper (`nanocua.data.load_hf_dataset`)
+- Hugging Face dataset mapper (`nanocua.data.load_hf_dataset`, `load_hf_grounding`)
+- OS-Atlas / SeeClick / ScreenSpot downloaders
 - Real OSWorld / Docker / pyautogui execution
 - RL / GRPO on rollouts
 - Competitive VLMs, packing, multi-GPU recipes
@@ -194,7 +255,8 @@ pytest
 ```
 
 Tests stay offline: no GPU, no Hugging Face download. Train is covered by
-`--dry-run` (format samples, do not load weights).
+`--dry-run` (format samples, do not load weights). Grounding is covered the
+same way (`--task grounding`).
 
 ---
 

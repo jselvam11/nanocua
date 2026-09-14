@@ -1,0 +1,37 @@
+[
+  {
+    "id": "g-address-bar",
+    "screenshot": "screenshots/step_00.png",
+    "instruction": "the browser address bar",
+    "point": [0.52, 0.08],
+    "bbox": [0.20, 0.03, 0.85, 0.13],
+    "metadata": {
+      "synthetic": true,
+      "note": "Same click target as fixture-weather-search step 0. Grounding localizes; SFT later clicks."
+    }
+  },
+  {
+    "id": "g-new-tab",
+    "screenshot": "screenshots/step_00.png",
+    "instruction": "click the new tab button",
+    "point": [0.12, 0.04],
+    "bbox": [0.08, 0.01, 0.16, 0.08],
+    "metadata": {"synthetic": true}
+  },
+  {
+    "id": "g-file-menu",
+    "screenshot": "screenshots/step_10.png",
+    "instruction": "the File menu",
+    "point": [0.06, 0.04],
+    "bbox": [0.01, 0.01, 0.12, 0.08],
+    "metadata": {"synthetic": true}
+  },
+  {
+    "id": "g-save-button",
+    "screenshot": "screenshots/step_10.png",
+    "instruction": "Save",
+    "point": [0.12, 0.22],
+    "bbox": [0.04, 0.18, 0.22, 0.28],
+    "metadata": {"synthetic": true}
+  }
+]
