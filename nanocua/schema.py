@@ -1,0 +1,260 @@
+"""Canonical CUA records: Action, Step, Trajectory, SFTSample.
+
+A *trajectory* is one recorded attempt at a computer-use task: a goal plus an
+ordered list of steps. Each *step* is what the agent saw (screenshot), thought,
+and did (action) at that moment.
+
+This is the whole data model. Fork here if you want a richer action space
+(drag, middle-click, …) or extra CoT fields (observation, reflection).
+
+Coordinates
+-----------
+Mouse positions are **normalized to [0, 1]** relative to the screenshot
+(top-left is ``(0, 0)``, bottom-right is ``(1, 1)``). That matches common
+open CUA datasets (e.g. AgentNet-style ``pyautogui.click(x=0.16, y=0.27)``).
+At execution time you multiply by the real screen width/height.
+
+Action string
+-------------
+``Action.to_string()`` emits a pyautogui-style call::
+
+    click(x=0.52, y=0.08)
+    type(text="weather today")
+    hotkey(keys=["ctrl", "l"])
+    terminate(status="success")
+
+The same string is what the VLM is trained to emit after ``Action:``.
+"""
+
+from __future__ import annotations
+
+import ast
+import json
+import re
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any
+
+# A small, portable subset — enough to learn the loop, not a full OS driver.
+# TODO: add drag, mouse_move, key_down/up when you need them.
+ACTION_TYPES = (
+    "click",
+    "double_click",
+    "right_click",
+    "type",
+    "hotkey",
+    "scroll",
+    "wait",
+    "terminate",
+)
+
+_CALL_RE = re.compile(
+    r"^(?:pyautogui\.)?([A-Za-z_][A-Za-z0-9_]*)\s*\((.*)\)\s*$",
+    re.DOTALL,
+)
+
+
+def _fmt_value(value: Any) -> str:
+    if isinstance(value, str):
+        return json.dumps(value)
+    if isinstance(value, float):
+        # Stable, short floats so exact-match eval is not ruined by 0.5200001.
+        return f"{value:.4g}"
+    if isinstance(value, list):
+        inner = ", ".join(_fmt_value(v) for v in value)
+        return f"[{inner}]"
+    return repr(value)
+
+
+@dataclass
+class Action:
+    """One computer-use action: a type plus JSON-serializable args."""
+
+    type: str
+    args: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.type = str(self.type).strip()
+        if not self.type:
+            raise ValueError("Action.type must be non-empty")
+        if not isinstance(self.args, dict):
+            raise TypeError("Action.args must be a dict")
+
+    def to_string(self) -> str:
+        """Canonical pyautogui-style string used as the SFT target."""
+        if not self.args:
+            return f"{self.type}()"
+        parts = []
+        for key in sorted(self.args):
+            parts.append(f"{key}={_fmt_value(self.args[key])}")
+        return f"{self.type}({', '.join(parts)})"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": self.type, "args": dict(self.args)}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | str) -> Action:
+        if isinstance(data, str):
+            return cls.from_string(data)
+        if not isinstance(data, dict):
+            raise TypeError(f"action must be dict or str, got {type(data)!r}")
+        if "type" in data:
+            args = data.get("args") or data.get("params") or {}
+            return cls(type=data["type"], args=dict(args))
+        # Single-key form: {"click": {"x": 0.2, "y": 0.3}}
+        if len(data) == 1:
+            kind, args = next(iter(data.items()))
+            return cls(type=kind, args=dict(args or {}))
+        raise ValueError(f"cannot parse action dict: {data!r}")
+
+    @classmethod
+    def from_string(cls, text: str) -> Action:
+        """Parse ``click(x=0.5, y=0.2)`` or ``pyautogui.click(...)``."""
+        text = text.strip()
+        match = _CALL_RE.match(text)
+        if not match:
+            raise ValueError(f"not an action call: {text!r}")
+        name, raw_args = match.group(1), match.group(2).strip()
+        if not raw_args:
+            return cls(type=name, args={})
+        # Parse kwargs via the AST so we never eval() user strings.
+        try:
+            tree = ast.parse(f"f({raw_args})", mode="eval")
+        except SyntaxError as exc:
+            raise ValueError(f"cannot parse action args: {text!r}") from exc
+        call = tree.body
+        if not isinstance(call, ast.Call) or call.args:
+            raise ValueError(f"only keyword args are allowed: {text!r}")
+        args: dict[str, Any] = {}
+        for keyword in call.keywords:
+            if keyword.arg is None:
+                raise ValueError(f"no **kwargs in action strings: {text!r}")
+            args[keyword.arg] = ast.literal_eval(keyword.value)
+        return cls(type=name, args=args)
+
+
+@dataclass
+class Step:
+    """One timestep in a trajectory.
+
+    ``history`` is usually *derived* at expand-time from earlier steps. You
+    may store it explicitly if you imported a dataset that already has it.
+    """
+
+    screenshot: str
+    thought: str
+    action: Action
+    observation: str = ""
+    index: int = 0
+    history: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "index": self.index,
+            "screenshot": self.screenshot,
+            "observation": self.observation,
+            "thought": self.thought,
+            "action": self.action.to_dict(),
+            "history": list(self.history),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any], default_index: int = 0) -> Step:
+        action = Action.from_dict(data.get("action", data.get("code", {})))
+        return cls(
+            screenshot=str(data.get("screenshot") or data.get("image") or ""),
+            thought=str(data.get("thought") or data.get("reasoning") or ""),
+            action=action,
+            observation=str(data.get("observation") or ""),
+            index=int(data.get("index", default_index)),
+            history=list(data.get("history") or []),
+        )
+
+
+@dataclass
+class Trajectory:
+    """One recorded episode: a goal and the T steps taken to pursue it."""
+
+    id: str
+    goal: str
+    steps: list[Step] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "goal": self.goal,
+            "steps": [step.to_dict() for step in self.steps],
+            "metadata": dict(self.metadata),
+        }
+
+    def to_json(self, *, indent: int = 2) -> str:
+        return json.dumps(self.to_dict(), indent=indent)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Trajectory:
+        raw_steps = data.get("steps") or data.get("traj") or []
+        steps = [Step.from_dict(item, default_index=i) for i, item in enumerate(raw_steps)]
+        return cls(
+            id=str(data.get("id") or data.get("task_id") or ""),
+            goal=str(data.get("goal") or data.get("instruction") or data.get("task") or ""),
+            steps=steps,
+            metadata=dict(data.get("metadata") or {}),
+        )
+
+    @classmethod
+    def from_json(cls, text: str) -> Trajectory:
+        return cls.from_dict(json.loads(text))
+
+
+@dataclass
+class SFTSample:
+    """One supervised example produced by step-prefix expansion.
+
+    The model sees: goal + history (steps ``0 .. t-1``) + current screenshot.
+    The model should produce: thought + action at step ``t``.
+    """
+
+    trajectory_id: str
+    step_index: int
+    goal: str
+    screenshot: str
+    history: list[str]
+    thought: str
+    action: Action
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["action"] = self.action.to_dict()
+        return payload
+
+
+@dataclass
+class Observation:
+    """What an environment returns after ``reset`` / ``step``.
+
+    ``screenshot`` is a filesystem path (or any string ref your env understands).
+    ``text`` is reserved for optional a11y / OCR later — unused in the MVP.
+    """
+
+    screenshot: str
+    text: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+def dump_trajectories(trajectories: list[Trajectory], path: str | Path) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps([traj.to_dict() for traj in trajectories], indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def load_trajectory_dicts(path: str | Path) -> list[dict[str, Any]]:
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(raw, dict):
+        raw = raw.get("trajectories") or raw.get("data") or [raw]
+    if not isinstance(raw, list):
+        raise TypeError(f"expected a list of trajectories in {path}")
+    return raw

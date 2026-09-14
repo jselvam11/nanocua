@@ -1,0 +1,13 @@
+# nanocua smoke SFT
+# CPU will finish a few steps slowly; a GPU is nicer. First run downloads the VLM.
+
+model_name: HuggingFaceTB/SmolVLM-256M-Instruct
+data_path: ""          # empty = bundled fixture
+output_dir: outputs/smoke
+learning_rate: 1.0e-5
+batch_size: 1
+max_steps: 4
+image_size: 384
+max_length: 1024
+logging_steps: 1
+seed: 42

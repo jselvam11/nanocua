@@ -1,0 +1,61 @@
+"""Offline metrics + mock-env online stub (no GPU)."""
+
+from nanocua.data import load_trajectories
+from nanocua.env import MockComputerEnv
+from nanocua.eval import match_actions, offline_eval, online_eval
+from nanocua.eval.offline import as_action
+from nanocua.eval.online import always_wait
+from nanocua.prompts import parse_assistant_message
+from nanocua.schema import Action, SFTSample
+
+
+def test_exact_and_normalized_match():
+    gold = Action(type="click", args={"x": 0.52, "y": 0.08})
+    close = Action(type="click", args={"x": 0.521, "y": 0.079})
+    scores = match_actions(close, gold)
+    assert scores["exact"] is False
+    assert scores["normalized"] is True
+    assert scores["type"] is True
+
+
+def test_gold_copy_is_perfect():
+    result = offline_eval(load_trajectories())
+    assert result["n"] == 6
+    assert result["exact"] == 1.0
+    assert result["normalized"] == 1.0
+    assert result["parse_errors"] == 0
+
+
+def test_always_wait_is_wrong():
+    def wait(_sample: SFTSample) -> Action:
+        return Action(type="wait", args={"seconds": 1})
+
+    result = offline_eval(load_trajectories(), predictor=wait)
+    assert result["exact"] == 0.0
+    assert result["type"] == 0.0
+
+
+def test_parse_assistant_and_eval_from_strings():
+    gold = load_trajectories()[0].steps[0].action
+    text = "Thought: focus the bar\nAction: click(x=0.52, y=0.08)"
+    thought, parsed = parse_assistant_message(text)
+    assert "focus" in thought
+    assert match_actions(parsed, gold)["exact"]
+    result = offline_eval(load_trajectories()[:1], predictions=[text] * 4)
+    assert result["n"] == 4
+    assert result["exact"] == 0.25  # only step 0 is that click
+
+
+def test_as_action_accepts_bare_call():
+    action = as_action("hotkey(keys=[\"enter\"])")
+    assert action.type == "hotkey"
+
+
+def test_mock_env_and_online_stub(tmp_path):
+    env = MockComputerEnv(max_steps=3, frame_dir=tmp_path / "frames")
+    result = online_eval(env, always_wait, task="do nothing", max_steps=3)
+    assert result["steps"] == 3
+    assert result["done"] is True
+    assert result["actions"][0].startswith("wait")
+    obs = env.reset("again")
+    assert obs.screenshot.endswith(".png")
