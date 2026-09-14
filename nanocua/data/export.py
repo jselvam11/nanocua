@@ -21,8 +21,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from nanocua.prompts import format_assistant_message, format_user_message, SYSTEM_PROMPT
-from nanocua.schema import SFTSample
+from nanocua.prompts import (
+    GROUNDING_SYSTEM_PROMPT,
+    SYSTEM_PROMPT,
+    format_assistant_message,
+    format_grounding_assistant,
+    format_grounding_user,
+    format_user_message,
+)
+from nanocua.schema import GroundingExample, SFTSample
 
 
 def sample_to_sharegpt(sample: SFTSample) -> dict:
@@ -44,10 +51,33 @@ def sample_to_sharegpt(sample: SFTSample) -> dict:
     }
 
 
-def export_jsonl(samples: list[SFTSample], path: str | Path) -> Path:
+def grounding_to_sharegpt(example: GroundingExample) -> dict:
+    return {
+        "id": example.id,
+        "images": [example.screenshot],
+        "conversations": [
+            {"from": "system", "value": GROUNDING_SYSTEM_PROMPT},
+            {"from": "human", "value": format_grounding_user(example, include_image_token=True)},
+            {"from": "gpt", "value": format_grounding_assistant(example)},
+        ],
+        "instruction": example.instruction,
+        "messages": [
+            {"role": "system", "content": GROUNDING_SYSTEM_PROMPT},
+            {"role": "user", "content": format_grounding_user(example, include_image_token=True)},
+            {"role": "assistant", "content": format_grounding_assistant(example)},
+        ],
+    }
+
+
+def export_jsonl(samples: list[SFTSample] | list[GroundingExample], path: str | Path) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         for sample in samples:
-            handle.write(json.dumps(sample_to_sharegpt(sample), ensure_ascii=False) + "\n")
+            row = (
+                grounding_to_sharegpt(sample)
+                if isinstance(sample, GroundingExample)
+                else sample_to_sharegpt(sample)
+            )
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     return path

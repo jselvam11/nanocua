@@ -13,10 +13,16 @@ from nanocua.train.sft import train
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m nanocua.train",
-        description="Smoke SFT on CUA trajectories (fixture by default).",
+        description="Smoke train on CUA trajectories (SFT) or GUI grounding triples.",
+    )
+    parser.add_argument(
+        "--task",
+        choices=("sft", "grounding"),
+        default=None,
+        help="sft = trajectory behavior cloning (default); grounding = Stage-1 GUI localize.",
     )
     parser.add_argument("--config", help="YAML or JSON TrainConfig file")
-    parser.add_argument("--data", dest="data_path", help="Trajectory JSON (default: bundled fixture)")
+    parser.add_argument("--data", dest="data_path", help="JSON fixture (default: bundled for the task)")
     parser.add_argument("--model", dest="model_name", help="Hugging Face VLM id")
     parser.add_argument("--output-dir", dest="output_dir")
     parser.add_argument("--max-steps", dest="max_steps", type=int)
@@ -35,6 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     cfg = load_train_config(
         args.config,
+        task=args.task,
         data_path=args.data_path,
         model_name=args.model_name,
         output_dir=args.output_dir,
@@ -45,10 +52,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     try:
         result = train(cfg, dry_run=args.dry_run)
-    except ImportError as exc:
-        print(exc, file=sys.stderr)
-        return 2
-    except RuntimeError as exc:
+    except (ImportError, RuntimeError, ValueError) as exc:
         print(exc, file=sys.stderr)
         return 2
     print(json.dumps(result, indent=2, default=str))

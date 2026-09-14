@@ -1,12 +1,12 @@
 """Offline metrics + mock-env online stub (no GPU)."""
 
-from nanocua.data import load_trajectories
+from nanocua.data import load_grounding_examples, load_trajectories
 from nanocua.env import MockComputerEnv
-from nanocua.eval import match_actions, offline_eval, online_eval
+from nanocua.eval import grounding_eval, match_actions, offline_eval, online_eval, point_in_bbox
 from nanocua.eval.offline import as_action
 from nanocua.eval.online import always_wait
-from nanocua.prompts import parse_assistant_message
-from nanocua.schema import Action, SFTSample
+from nanocua.prompts import parse_assistant_message, parse_grounding_prediction
+from nanocua.schema import Action, GroundingExample, SFTSample
 
 
 def test_exact_and_normalized_match():
@@ -59,3 +59,43 @@ def test_mock_env_and_online_stub(tmp_path):
     assert result["actions"][0].startswith("wait")
     obs = env.reset("again")
     assert obs.screenshot.endswith(".png")
+
+
+def test_grounding_gold_copy_is_perfect():
+    result = grounding_eval(load_grounding_examples())
+    assert result["n"] == 4
+    assert result["parse_errors"] == 0
+    assert result["point_in_bbox"] == 1.0
+    assert result["point_acc"] == 1.0
+    assert result["mean_distance"] == 0.0
+
+
+def test_grounding_jitter_inside_bbox_and_far_miss():
+    examples = load_grounding_examples()
+
+    def jitter(example: GroundingExample) -> str:
+        x, y = example.gold_point()
+        return f"point(x={x + 0.01}, y={y + 0.01})"
+
+    jittered = grounding_eval(examples, predictor=jitter)
+    assert jittered["point_in_bbox"] == 1.0
+    assert jittered["point_acc"] == 1.0
+
+    def far(_example: GroundingExample) -> str:
+        return "point(x=0.99, y=0.99)"
+
+    missed = grounding_eval(examples, predictor=far)
+    assert missed["point_in_bbox"] == 0.0
+    assert missed["point_acc"] == 0.0
+
+
+def test_grounding_accepts_click_and_bracket_forms():
+    gold = load_grounding_examples()[0]
+    click = parse_grounding_prediction("Action: click(x=0.52, y=0.08)")
+    bracket = parse_grounding_prediction("the element is at [0.52, 0.08]")
+    assert click.type == "click"
+    assert bracket.type == "point"
+    result = grounding_eval([gold], predictions=["click(x=0.52, y=0.08)"])
+    assert result["point_in_bbox"] == 1.0
+    assert point_in_bbox((0.52, 0.08), gold.bbox) is True
+    assert point_in_bbox((0.99, 0.99), gold.bbox) is False

@@ -1,6 +1,8 @@
 """Schema round-trip and action parsing."""
 
-from nanocua.schema import Action, Trajectory
+import pytest
+
+from nanocua.schema import Action, GroundingExample, Trajectory
 
 
 def test_action_string_roundtrip():
@@ -40,3 +42,52 @@ def test_trajectory_json_roundtrip():
     again = Trajectory.from_dict(traj.to_dict())
     assert again.goal == "do a thing"
     assert again.steps[0].action.to_string() == traj.steps[0].action.to_string()
+
+
+def test_grounding_roundtrip_and_as_click():
+    example = GroundingExample.from_dict(
+        {
+            "id": "g1",
+            "screenshot": "a.png",
+            "instruction": "the browser address bar",
+            "point": [0.52, 0.08],
+            "bbox": [0.20, 0.03, 0.85, 0.13],
+        }
+    )
+    assert example.target_string() == "point(x=0.52, y=0.08)"
+    assert example.as_click().to_string() == "click(x=0.52, y=0.08)"
+    again = GroundingExample.from_dict(example.to_dict())
+    assert again.point == (0.52, 0.08)
+    assert again.bbox == (0.20, 0.03, 0.85, 0.13)
+
+
+def test_grounding_bbox_only_uses_center():
+    example = GroundingExample(
+        id="box",
+        screenshot="a.png",
+        instruction="Save",
+        bbox=(0.0, 0.0, 0.2, 0.4),
+    )
+    assert example.gold_point() == (0.1, 0.2)
+    assert example.target_string().startswith("bbox(")
+
+
+def test_grounding_xywh_and_rejects_oob():
+    example = GroundingExample.from_dict(
+        {
+            "id": "xywh",
+            "image": "a.png",
+            "expression": "OK",
+            "bbox": {"x": 0.1, "y": 0.2, "w": 0.3, "h": 0.4},
+        }
+    )
+    assert example.bbox[0] == pytest.approx(0.1)
+    assert example.bbox[1] == pytest.approx(0.2)
+    assert example.bbox[2] == pytest.approx(0.4)
+    assert example.bbox[3] == pytest.approx(0.6)
+    with pytest.raises(ValueError, match="non-empty"):
+        GroundingExample(id="x", screenshot="a.png", instruction="  ")
+    with pytest.raises(ValueError, match="point and/or"):
+        GroundingExample(id="x", screenshot="a.png", instruction="OK")
+    with pytest.raises(ValueError, match="\\[0, 1\\]"):
+        GroundingExample(id="x", screenshot="a.png", instruction="OK", point=(1.5, 0.2))

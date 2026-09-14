@@ -20,7 +20,9 @@ class TrainConfig:
     # enough to download and run a few steps, not a competitive CUA policy.
     # Swap this string to try Qwen2-VL / InternVL / your fork.
     model_name: str = "HuggingFaceTB/SmolVLM-256M-Instruct"
-    data_path: str = ""  # empty → bundled fixture
+    # "sft" = trajectory behavior cloning. "grounding" = Stage-1 GUI localize.
+    task: str = "sft"
+    data_path: str = ""  # empty → bundled fixture for the chosen task
     output_dir: str = "outputs/smoke"
     learning_rate: float = 1.0e-5
     batch_size: int = 1

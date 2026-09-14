@@ -1,0 +1,14 @@
+# nanocua smoke grounding pretrain (Stage-1 localize)
+# Same Trainer as SFT; different data + prompt. First real run downloads the VLM.
+
+task: grounding
+model_name: HuggingFaceTB/SmolVLM-256M-Instruct
+data_path: ""          # empty = bundled grounding fixture
+output_dir: outputs/smoke_grounding
+learning_rate: 1.0e-5
+batch_size: 1
+max_steps: 4
+image_size: 384
+max_length: 512
+logging_steps: 1
+seed: 42

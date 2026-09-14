@@ -2,8 +2,11 @@
 
 Read this file top to bottom — it is the whole training story:
 
-1. Load trajectories and expand them into SFT samples
-   (goal + history + screenshot → thought + action).
+1. Load data for the chosen task:
+   * ``sft`` — trajectories expanded into step-prefix samples
+     (goal + history + screenshot → thought + action).
+   * ``grounding`` — screenshot + referring expression → point/bbox
+     (Stage-1 GUI localize; same Trainer, different prompt).
 2. Format each sample as a short chat (see ``nanocua.prompts``).
 3. Run a few optimizer steps with ``transformers.Trainer``.
 
@@ -31,12 +34,20 @@ from pathlib import Path
 from typing import Any
 
 from nanocua.data.expand import expand_trajectories
-from nanocua.data.load import load_trajectories
-from nanocua.prompts import format_assistant_message, format_user_message, SYSTEM_PROMPT
-from nanocua.schema import SFTSample
+from nanocua.data.load import load_grounding_examples, load_trajectories
+from nanocua.prompts import (
+    GROUNDING_SYSTEM_PROMPT,
+    SYSTEM_PROMPT,
+    format_assistant_message,
+    format_grounding_assistant,
+    format_grounding_user,
+    format_user_message,
+)
+from nanocua.schema import GroundingExample, SFTSample
 from nanocua.train.config import TrainConfig
 
 _TRAIN_INSTALL = 'pip install -e ".[train]"'
+_TASKS = ("sft", "grounding")
 
 
 def _require_train_stack() -> tuple[Any, Any, Any]:
@@ -52,23 +63,38 @@ def _require_train_stack() -> tuple[Any, Any, Any]:
     return torch, AutoProcessor, AutoModelForImageTextToText
 
 
-def samples_from_config(cfg: TrainConfig) -> list[SFTSample]:
+def samples_from_config(cfg: TrainConfig) -> list[SFTSample] | list[GroundingExample]:
+    task = cfg.task.strip().lower()
+    if task not in _TASKS:
+        raise ValueError(
+            f"unknown task {cfg.task!r}. Use 'sft' (trajectory behavior cloning) "
+            "or 'grounding' (Stage-1 GUI localize)."
+        )
     data_path = cfg.data_path or None
-    trajectories = load_trajectories(data_path)
-    return expand_trajectories(trajectories)
+    if task == "grounding":
+        return load_grounding_examples(data_path)
+    return expand_trajectories(load_trajectories(data_path))
 
 
-def format_plain_example(sample: SFTSample) -> dict[str, Any]:
+def format_plain_example(sample: SFTSample | GroundingExample) -> dict[str, Any]:
     """Plain-text view of one sample (used by --dry-run and as a fallback)."""
-    user = format_user_message(sample, include_image_token=False)
-    assistant = format_assistant_message(sample)
-    text = f"{SYSTEM_PROMPT}\n\nUser: {user}\n\nAssistant: {assistant}"
+    if isinstance(sample, GroundingExample):
+        user = format_grounding_user(sample, include_image_token=False)
+        assistant = format_grounding_assistant(sample)
+        system = GROUNDING_SYSTEM_PROMPT
+        sample_id = sample.id
+    else:
+        user = format_user_message(sample, include_image_token=False)
+        assistant = format_assistant_message(sample)
+        system = SYSTEM_PROMPT
+        sample_id = f"{sample.trajectory_id}-step{sample.step_index}"
+    text = f"{system}\n\nUser: {user}\n\nAssistant: {assistant}"
     return {
         "text": text,
-        "prompt": f"{SYSTEM_PROMPT}\n\nUser: {user}\n\nAssistant:",
+        "prompt": f"{system}\n\nUser: {user}\n\nAssistant:",
         "completion": f" {assistant}",
         "screenshot": sample.screenshot,
-        "id": f"{sample.trajectory_id}-step{sample.step_index}",
+        "id": sample_id,
     }
 
 
@@ -129,11 +155,12 @@ def _build_collate(processor: Any, tokenizer: Any, cfg: TrainConfig) -> Any:
 
 
 def train(cfg: TrainConfig, *, dry_run: bool = False) -> dict[str, Any]:
-    """Run SFT (or stop after formatting samples when ``dry_run=True``)."""
+    """Run SFT or grounding pretrain (or stop after formatting when ``dry_run=True``)."""
     samples = samples_from_config(cfg)
     formatted = [format_plain_example(sample) for sample in samples]
     summary = {
         "n_samples": len(formatted),
+        "task": cfg.task,
         "model_name": cfg.model_name,
         "max_steps": cfg.max_steps,
         "dry_run": dry_run,
@@ -142,7 +169,7 @@ def train(cfg: TrainConfig, *, dry_run: bool = False) -> dict[str, Any]:
     if dry_run:
         return summary
     if not formatted:
-        raise ValueError("no SFT samples — check data_path and the fixture JSON")
+        raise ValueError("no training samples — check data_path, task, and the fixture JSON")
 
     torch, AutoProcessor, AutoModelForImageTextToText = _require_train_stack()
 
