@@ -1,0 +1,55 @@
+[
+  {
+    "id": "fixture-weather-search",
+    "goal": "Open the browser address bar and search for today's weather.",
+    "metadata": {
+      "synthetic": true,
+      "note": "Tiny offline demo. Screenshots are dummy solid-color PNGs."
+    },
+    "steps": [
+      {
+        "index": 0,
+        "screenshot": "screenshots/step_00.png",
+        "thought": "The browser is already open. I should focus the address bar so I can type a query.",
+        "action": {"type": "click", "args": {"x": 0.52, "y": 0.08}}
+      },
+      {
+        "index": 1,
+        "screenshot": "screenshots/step_01.png",
+        "thought": "The address bar is focused. I will type a weather search.",
+        "action": {"type": "type", "args": {"text": "weather today"}}
+      },
+      {
+        "index": 2,
+        "screenshot": "screenshots/step_02.png",
+        "thought": "The query is entered. Press Enter to run the search.",
+        "action": {"type": "hotkey", "args": {"keys": ["enter"]}}
+      },
+      {
+        "index": 3,
+        "screenshot": "screenshots/step_03.png",
+        "thought": "The results page shows today's weather. The task is done.",
+        "action": {"type": "terminate", "args": {"status": "success"}}
+      }
+    ]
+  },
+  {
+    "id": "fixture-save-document",
+    "goal": "Save the current document.",
+    "metadata": {"synthetic": true},
+    "steps": [
+      {
+        "index": 0,
+        "screenshot": "screenshots/step_10.png",
+        "thought": "A save shortcut is the fastest path.",
+        "action": {"type": "hotkey", "args": {"keys": ["ctrl", "s"]}}
+      },
+      {
+        "index": 1,
+        "screenshot": "screenshots/step_11.png",
+        "thought": "The document is saved.",
+        "action": {"type": "terminate", "args": {"status": "success"}}
+      }
+    ]
+  }
+]

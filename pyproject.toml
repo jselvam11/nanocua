@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nanocua"
+version = "0.1.0"
+description = "A nanoGPT-style, minimal skeleton for training computer-use agents."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "jselvam11" }]
+keywords = ["computer-use-agent", "cua", "vlm", "sft", "agents"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+# Base install is stdlib-only: schema, data expand, offline eval, mock env.
+dependencies = []
+
+[project.optional-dependencies]
+train = [
+    "transformers>=4.45",
+    "trl>=0.11",
+    "datasets>=2.20",
+    "accelerate>=0.34",
+    "pillow>=10.0",
+    "torch",
+]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+nanocua-train = "nanocua.train.__main__:main"
+nanocua-eval = "nanocua.eval.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/jselvam11/nanocua"
+
+[tool.setuptools.packages.find]
+include = ["nanocua*"]
+
+[tool.setuptools.package-data]
+nanocua = ["data/fixtures/**/*", "py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
